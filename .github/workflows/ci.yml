@@ -19,67 +19,35 @@ jobs:
       - run: pip install -r requirements-test.txt
       - name: Executar testes com cobertura
         run: |
-          pytest tests/ --tb=short --junitxml=test-results.xml \
-            --cov=. --cov-report=term-missing --cov-report=json:coverage.json -v
+          pytest tests/ -v \
+            --junitxml=test-results.xml \
+            --cov=. \
+            --cov-report=xml:coverage.xml
         env:
           DATABASE_URL: "postgresql://fake:fake@localhost/fake"
           AUTH_SERVICE_URL: "http://fake-auth"
-      - name: Calcular complexidade ciclomática
+      - name: Publicar resultados dos testes
+        uses: EnricoMi/publish-unit-test-result-action@v2
         if: always()
-        run: radon cc app.py -s -j > radon-output.json && radon cc app.py -s -a
-      - name: Publicar relatório no Job Summary
+        with:
+          files: test-results.xml
+      - name: Publicar cobertura
+        uses: irongut/CodeCoverageSummary@v1.3.0
         if: always()
-        run: |
-          python - <<'PYEOF'
-          import json, os
-          summary = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
-          lines = []
-          lines.append("# 📊 Relatório de Qualidade — targeting-service\n")
-          lines.append("## 1 · Testes Unitários\n")
-          try:
-              import xml.etree.ElementTree as ET
-              root = ET.parse("test-results.xml").getroot()
-              total = int(root.attrib.get("tests", 0))
-              failures = int(root.attrib.get("failures", 0))
-              errors = int(root.attrib.get("errors", 0))
-              passed = total - failures - errors
-              icon = "✅" if failures == 0 and errors == 0 else "❌"
-              lines.append(f"{icon} **{passed} passaram** | ❌ **{failures + errors} falharam** | Total: {total}\n")
-          except Exception as e:
-              lines.append(f"> ⚠️ {e}\n")
-          try:
-              cov = json.load(open("coverage.json"))
-              total_pct = cov["totals"]["percent_covered"]
-              lines.append("\n## 📈 Cobertura de Código\n| Arquivo | Linhas | Cobertura |\n|---------|--------|----------|\n")
-              for fname, data in cov.get("files", {}).items():
-                  pct = data["summary"]["percent_covered"]
-                  bar = "🟢" if pct >= 80 else ("🟡" if pct >= 50 else "🔴")
-                  lines.append(f"| `{fname.split('/')[-1]}` | {data['summary']['num_statements']} | {bar} {pct:.1f}% |\n")
-              cov_icon = "🟢" if total_pct >= 80 else ("🟡" if total_pct >= 50 else "🔴")
-              lines.append(f"| **Total** | — | {cov_icon} **{total_pct:.1f}%** |\n")
-          except Exception as e:
-              lines.append(f"> ⚠️ {e}\n")
-          try:
-              radon = json.load(open("radon-output.json"))
-              functions = sorted([{"file": f.split("/")[-1], "name": b["name"], "complexity": b["complexity"], "rank": b["rank"]} for f, blocks in radon.items() for b in blocks], key=lambda x: x["complexity"], reverse=True)
-              lines.append("\n## 🔬 Complexidade Ciclomática (Top 10)\n| Função | Arquivo | Score | Rank |\n|--------|---------|-------|------|\n")
-              for fn in functions[:10]:
-                  risk = "🔴" if fn["complexity"] >= 10 else ("🟡" if fn["complexity"] >= 5 else "🟢")
-                  lines.append(f"| `{fn['name']}` | `{fn['file']}` | {risk} {fn['complexity']} | {fn['rank']} |\n")
-          except Exception as e:
-              lines.append(f"> ⚠️ {e}\n")
-          open(summary, "a").writelines(lines)
-          PYEOF
-        env:
-          GITHUB_STEP_SUMMARY: ${{ env.GITHUB_STEP_SUMMARY }}
+        with:
+          filename: coverage.xml
+          format: markdown
+          output: both
+      - name: Complexidade ciclomática (radon)
+        if: always()
+        run: radon cc app.py -s -a
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: targeting-test-reports
           path: |
             test-results.xml
-            coverage.json
-            radon-output.json
+            coverage.xml
           retention-days: 30
 
   lint:
@@ -91,39 +59,8 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install flake8==7.1.1
-      - name: Executar lint
-        run: |
-          flake8 app.py --max-line-length=120 --format=json > flake8-output.json || true
-          flake8 app.py --max-line-length=120 --statistics || true
-      - name: Publicar lint no Job Summary
-        if: always()
-        run: |
-          python - <<'PYEOF'
-          import json, os
-          summary = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
-          lines = ["# 🔍 Lint — targeting-service\n"]
-          try:
-              raw = open("flake8-output.json").read().strip()
-              data = json.loads(raw) if raw else {}
-              issues = [{"file": f.split("/")[-1], "line": i["line_number"], "code": i["code"], "text": i["text"]} for f, lst in data.items() for i in lst]
-              if not issues:
-                  lines.append("✅ Nenhum problema encontrado.\n")
-              else:
-                  lines.append(f"> ⚠️ **{len(issues)} problema(s)** — não bloqueia a pipeline.\n\n| Arquivo | Linha | Código | Descrição |\n|---------|-------|--------|----------|\n")
-                  for i in issues[:30]:
-                      lines.append(f"| `{i['file']}` | {i['line']} | `{i['code']}` | {i['text']} |\n")
-          except Exception as e:
-              lines.append(f"> ⚠️ {e}\n")
-          open(summary, "a").writelines(lines)
-          PYEOF
-        env:
-          GITHUB_STEP_SUMMARY: ${{ env.GITHUB_STEP_SUMMARY }}
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: targeting-lint-report
-          path: flake8-output.json
-          retention-days: 30
+      - name: Executar flake8
+        run: flake8 app.py --max-line-length=120 --statistics || true
 
   docker-build:
     name: "3 · Docker Build"
@@ -139,7 +76,7 @@ jobs:
           tags: targeting-service:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          outputs: type=docker,dest=/tmp/targeting-service.tar
+          outputs: type=docker,dest=/tmp/flag-service.tar
       - uses: actions/upload-artifact@v4
         with:
           name: targeting-docker-image
@@ -156,38 +93,21 @@ jobs:
           name: targeting-docker-image
           path: /tmp
       - run: docker load --input /tmp/targeting-service.tar
-      - uses: aquasecurity/trivy-action@master
+      - name: Trivy — scan e publicar no Job Summary
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: targeting-service:${{ github.sha }}
+          format: table
+          exit-code: 0
+          severity: CRITICAL,HIGH,MEDIUM
+      - name: Trivy — salvar relatório JSON
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: targeting-service:${{ github.sha }}
           format: json
           output: trivy-report.json
           exit-code: 0
           severity: CRITICAL,HIGH,MEDIUM
-      - name: Publicar Trivy no Job Summary
-        if: always()
-        run: |
-          python3 - <<'PYEOF'
-          import json, os
-          summary = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
-          lines = ["# 🛡️ Scan de Vulnerabilidades — targeting-service\n"]
-          try:
-              data = json.load(open("trivy-report.json"))
-              all_vulns = [{"id": v.get("VulnerabilityID",""), "pkg": v.get("PkgName",""), "severity": v.get("Severity",""), "installed": v.get("InstalledVersion",""), "fixed": v.get("FixedVersion","—"), "title": v.get("Title","")[:60]} for r in data.get("Results",[]) for v in (r.get("Vulnerabilities") or [])]
-              all_vulns.sort(key=lambda x: {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3}.get(x["severity"],4))
-              counts = {s: sum(1 for v in all_vulns if v["severity"]==s) for s in ["CRITICAL","HIGH","MEDIUM"]}
-              if not all_vulns:
-                  lines.append("✅ Nenhuma vulnerabilidade encontrada.\n")
-              else:
-                  lines.append(f"🔴 **CRITICAL: {counts['CRITICAL']}** | 🟠 **HIGH: {counts['HIGH']}** | 🟡 **MEDIUM: {counts['MEDIUM']}**\n\n| Severidade | CVE | Pacote | Instalado | Fix | Descrição |\n|---|---|---|---|---|---|\n")
-                  icons = {"CRITICAL":"🔴","HIGH":"🟠","MEDIUM":"🟡","LOW":"🟢","UNKNOWN":"⚪"}
-                  for v in all_vulns[:25]:
-                      lines.append(f"| {icons.get(v['severity'],'⚪')} {v['severity']} | `{v['id']}` | `{v['pkg']}` | {v['installed']} | {v['fixed']} | {v['title']} |\n")
-          except Exception as e:
-              lines.append(f"> ⚠️ {e}\n")
-          open(summary, "a").writelines(lines)
-          PYEOF
-        env:
-          GITHUB_STEP_SUMMARY: ${{ env.GITHUB_STEP_SUMMARY }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -214,14 +134,13 @@ jobs:
           name: targeting-docker-image
           path: /tmp
       - run: docker load --input /tmp/targeting-service.tar
-      - env:
+      - name: Tag e push para ECR
+        env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: tech-challenge-prod/targeting-service
           IMAGE_TAG: ${{ github.sha }}
         run: |
           SHORT_SHA=$(echo $IMAGE_TAG | cut -c1-7)
-          FULL_TAG="$ECR_REGISTRY/$ECR_REPOSITORY:$SHORT_SHA"
-          docker tag targeting-service:$IMAGE_TAG $FULL_TAG
-          docker push $FULL_TAG
-          echo "### 🚀 Push ECR — targeting-service" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Imagem: \`$FULL_TAG\`" >> $GITHUB_STEP_SUMMARY
+          docker tag targeting-service:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:$SHORT_SHA
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$SHORT_SHA
+          echo "✅ Imagem publicada: $ECR_REGISTRY/$ECR_REPOSITORY:$SHORT_SHA" >> $GITHUB_STEP_SUMMARY
