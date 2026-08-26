@@ -83,7 +83,7 @@ jobs:
           tags: targeting-service:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          outputs: type=docker,dest=/tmp/flag-service.tar
+          outputs: type=docker,dest=/tmp/targeting-service.tar
       - uses: actions/upload-artifact@v4
         with:
           name: targeting-docker-image
